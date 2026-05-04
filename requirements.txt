@@ -1,0 +1,7 @@
+pydualsense>=0.2.4
+pywin32>=306
+customtkinter>=5.2.2
+pillow>=10.0.0
+pystray>=0.19.4
+hidapi>=0.14.0
+pyinstaller>=6.0.0
