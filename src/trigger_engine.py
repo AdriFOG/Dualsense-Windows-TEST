@@ -497,43 +497,32 @@ class TriggerEngine:
     # ===== Comandos de Bajo Nivel =====
 
     def _send_trigger_command(self, ds, trigger: str, effect: TriggerEffect) -> None:
-        """Envia el comando de efecto al control."""
+        """Envia el comando de efecto al control usando la API real."""
         if not PYDUALSENSE_AVAILABLE:
             return
 
         try:
-            # Seleccionar metodo segun el gatillo
-            if trigger == 'left':
-                set_mode = ds.setLeftTriggerMode if hasattr(ds, 'setLeftTriggerMode') else None
-                set_force = ds.setLeftTriggerForce if hasattr(ds, 'setLeftTriggerForce') else None
-            else:
-                set_mode = ds.setRightTriggerMode if hasattr(ds, 'setRightTriggerMode') else None
-                set_force = ds.setRightTriggerForce if hasattr(ds, 'setRightTriggerForce') else None
-
-            if not set_mode:
-                return
-
-            # Mapear tipo de efecto a modo del control
+            # 1. Apuntar al objeto correcto del gatillo
+            t_obj = ds.triggerL if trigger == 'left' else ds.triggerR
+            
+            # 2. Establecer el modo
             mode = self._map_effect_to_mode(effect)
-            set_mode(mode)
+            t_obj.setMode(mode)
 
-            # Aplicar fuerza si el metodo existe
-            if set_force:
-                # Calcular parametros de fuerza
-                force_params = self._calculate_force_params(effect)
-                try:
-                    if len(force_params) == 1:
-                        set_force(force_params[0])
-                    elif len(force_params) == 2:
-                        set_force(force_params[0], force_params[1])
-                    elif len(force_params) >= 3:
-                        set_force(force_params[0], force_params[1], force_params[2])
-                except TypeError:
-                    # Fallback: intentar con un solo parametro
-                    set_force(effect.intensity)
+            # 3. Aplicar la fuerza desempaquetando los parametros correctos
+            params = self._calculate_force_params(effect)
+            
+            if len(params) == 1:
+                t_obj.setForce(0, params[0])
+            elif len(params) == 2:
+                t_obj.setForce(params[0], params[1])
+            elif len(params) == 3:
+                t_obj.setForce(params[0], params[1], params[2])
+            elif len(params) >= 4:
+                t_obj.setForce(params[0], params[1], params[2], params[3])
 
         except Exception as e:
-            logger.warning(f"Error enviando comando de gatillo: {e}")
+            pass # Silenciamos el log para que no inunde la consola
 
     def _map_effect_to_mode(self, effect: TriggerEffect) -> int:
         """Mapea un TriggerEffectType al modo correspondiente del DualSense."""
