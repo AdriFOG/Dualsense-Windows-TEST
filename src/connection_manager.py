@@ -19,12 +19,12 @@ except ImportError:
     logging.warning("pydualsense no instalado. El programa funcionara en modo simulacion.")
 
 from .bluetooth_utils import BluetoothManager
+from .emulator import EmulatorManager, EmulationMode  # <--- IMPORTAMOS EL EMULADOR
 
 logger = logging.getLogger(__name__)
 
 
 class ConnectionType(Enum):
-    """Tipo de conexion del control."""
     NONE = "none"
     USB = "usb"
     BLUETOOTH = "bluetooth"
@@ -32,7 +32,6 @@ class ConnectionType(Enum):
 
 
 class ChargingStatus(Enum):
-    """Estado de carga del control."""
     DISCHARGING = "descargando"
     CHARGING = "cargando"
     CHARGED = "cargado completo"
@@ -41,7 +40,6 @@ class ChargingStatus(Enum):
 
 @dataclass
 class ControllerState:
-    """Representa el estado actual del control."""
     connected: bool = False
     connection_type: ConnectionType = ConnectionType.NONE
     battery_level: int = 0
@@ -57,76 +55,56 @@ class ControllerState:
 
 
 class ConnectionManager:
-    """
-    Gestiona la conexion con el DualSense de PS5.
-    Detecta automaticamente conexion USB o Bluetooth.
-    """
-
-    # Intervalos de sondeo (segundos)
     CONNECTION_POLL_INTERVAL = 2.0
-    STATE_POLL_INTERVAL = 0.016  # ~60Hz para lectura de estado
+    STATE_POLL_INTERVAL = 0.016  # ~60Hz
 
     def __init__(self):
         self.dualsense: Optional['pydualsense'] = None
         self.bluetooth_manager = BluetoothManager()
+        self.emulator = EmulatorManager()  # <--- INICIALIZAMOS EL EMULADOR
 
-        # Estado
         self._state = ControllerState()
         self._connected = False
         self._connection_type = ConnectionType.NONE
         self._running = False
 
-        # Callbacks
         self._on_connect: List[Callable[[ConnectionType], None]] = []
         self._on_disconnect: List[Callable[[], None]] = []
         self._on_state_update: List[Callable[[ControllerState], None]] = []
         self._on_battery_change: List[Callable[[int, ChargingStatus], None]] = []
         self._on_error: List[Callable[[str], None]] = []
 
-        # Hilos
         self._connection_thread: Optional[threading.Thread] = None
         self._state_thread: Optional[threading.Thread] = None
         self._lock = threading.RLock()
 
-    # ===== Registro de Callbacks =====
-
     def on_connect(self, callback: Callable[[ConnectionType], None]) -> None:
-        """Registra callback para cuando se conecta el control."""
         self._on_connect.append(callback)
 
     def on_disconnect(self, callback: Callable[[], None]) -> None:
-        """Registra callback para cuando se desconecta el control."""
         self._on_disconnect.append(callback)
 
     def on_state_update(self, callback: Callable[[ControllerState], None]) -> None:
-        """Registra callback para actualizaciones de estado."""
         self._on_state_update.append(callback)
 
     def on_battery_change(self, callback: Callable[[int, ChargingStatus], None]) -> None:
-        """Registra callback para cambios de bateria."""
         self._on_battery_change.append(callback)
 
     def on_error(self, callback: Callable[[str], None]) -> None:
-        """Registra callback para errores."""
         self._on_error.append(callback)
-
-    # ===== Propiedades =====
 
     @property
     def is_connected(self) -> bool:
-        """Indica si hay un control conectado."""
         with self._lock:
             return self._connected
 
     @property
     def connection_type(self) -> ConnectionType:
-        """Devuelve el tipo de conexion actual."""
         with self._lock:
             return self._connection_type
 
     @property
     def state(self) -> ControllerState:
-        """Devuelve una copia del estado actual."""
         with self._lock:
             return ControllerState(
                 connected=self._state.connected,
@@ -145,79 +123,54 @@ class ConnectionManager:
 
     @property
     def dualsense_instance(self) -> Optional['pydualsense']:
-        """Devuelve la instancia de pydualsense para acceso directo."""
         return self.dualsense
 
-    # ===== Gestión de Conexión =====
+    def set_emulation_mode(self, mode: EmulationMode) -> bool:
+        """Activa o desactiva la emulacion (Xbox, PS4 o Ninguna)"""
+        return self.emulator.set_mode(mode)
 
     def start(self) -> None:
-        """Inicia los hilos de gestion de conexion."""
         if self._running:
             return
 
         self._running = True
-
-        # Hilo de deteccion de conexion
-        self._connection_thread = threading.Thread(
-            target=self._connection_loop,
-            name="ConnectionMonitor",
-            daemon=True
-        )
+        self._connection_thread = threading.Thread(target=self._connection_loop, name="ConnectionMonitor", daemon=True)
         self._connection_thread.start()
-
-        # Hilo de lectura de estado
-        self._state_thread = threading.Thread(
-            target=self._state_loop,
-            name="StateMonitor",
-            daemon=True
-        )
+        self._state_thread = threading.Thread(target=self._state_loop, name="StateMonitor", daemon=True)
         self._state_thread.start()
-
         logger.info("ConnectionManager iniciado")
 
     def stop(self) -> None:
-        """Detiene los hilos y desconecta el control."""
         self._running = False
-
-        # Esperar a que los hilos terminen
         if self._connection_thread and self._connection_thread.is_alive():
             self._connection_thread.join(timeout=3)
         if self._state_thread and self._state_thread.is_alive():
             self._state_thread.join(timeout=3)
 
-        # Desconectar el control
+        self.emulator.set_mode(EmulationMode.NONE) # Apagar emulador al cerrar
         self._disconnect()
-
         logger.info("ConnectionManager detenido")
 
     def _connection_loop(self) -> None:
-        """Bucle principal de deteccion de conexion."""
         while self._running:
             try:
                 if not self._connected:
                     self._try_connect()
                 else:
-                    # Verificar que la conexion sigue viva
                     if not self._verify_connection():
                         self._disconnect()
-
                 time.sleep(self.CONNECTION_POLL_INTERVAL)
             except Exception as e:
                 logger.error(f"Error en bucle de conexion: {e}")
-                self._notify_error(f"Error de conexion: {str(e)}")
                 time.sleep(self.CONNECTION_POLL_INTERVAL * 2)
 
     def _try_connect(self) -> bool:
-        """Intenta conectar con el DualSense."""
         if not PYDUALSENSE_AVAILABLE:
             return False
 
         try:
-            # Crear instancia de pydualsense
             self.dualsense = pydualsense()
             self.dualsense.init()
-
-            # Detectar tipo de conexion
             conn_type = self._detect_connection_type()
 
             with self._lock:
@@ -228,74 +181,44 @@ class ConnectionManager:
 
             logger.info(f"DualSense conectado via {conn_type.value.upper()}")
             self._notify_connect(conn_type)
-
             return True
 
         except Exception as e:
-            # No se pudo conectar, limpiar
             if self.dualsense:
-                try:
-                    self.dualsense.close()
-                except Exception:
-                    pass
+                try: self.dualsense.close()
+                except Exception: pass
                 self.dualsense = None
-
-            # Solo loguear periodicamente para no saturar
-            if int(time.time()) % 10 == 0:
-                logger.debug(f"No se encontro DualSense: {e}")
-
             return False
 
     def _detect_connection_type(self) -> ConnectionType:
-        """Detecta si la conexion es USB o Bluetooth."""
-        if not self.dualsense:
-            return ConnectionType.UNKNOWN
-
+        if not self.dualsense: return ConnectionType.UNKNOWN
         try:
             device = self.dualsense.device
-
             if device:
                 try:
                     device_info = device.get_manufacturer_string() if hasattr(device, 'get_manufacturer_string') else ""
                     product_info = device.get_product_string() if hasattr(device, 'get_product_string') else ""
-
                     info_str = f"{device_info} {product_info}".lower()
 
-                    if "bluetooth" in info_str or "bt" in info_str:
-                        return ConnectionType.BLUETOOTH
-                    elif "usb" in info_str:
-                        return ConnectionType.USB
-                except Exception:
-                    pass
+                    if "bluetooth" in info_str or "bt" in info_str: return ConnectionType.BLUETOOTH
+                    elif "usb" in info_str: return ConnectionType.USB
+                except Exception: pass
 
                 try:
                     path = device.path.decode('utf-8') if isinstance(device.path, bytes) else str(device.path)
-                    if "bluetooth" in path.lower() or "{00001124" in path:
-                        return ConnectionType.BLUETOOTH
-                    elif "usb" in path.lower() or "hid" in path.lower():
-                        return ConnectionType.USB
-                except Exception:
-                    pass
-
+                    if "bluetooth" in path.lower() or "{00001124" in path: return ConnectionType.BLUETOOTH
+                    elif "usb" in path.lower() or "hid" in path.lower(): return ConnectionType.USB
+                except Exception: pass
             return ConnectionType.USB
-
-        except Exception as e:
-            logger.warning(f"No se pudo detectar tipo de conexion: {e}")
+        except Exception:
             return ConnectionType.UNKNOWN
 
     def _verify_connection(self) -> bool:
-        """Verifica que la conexion sigue activa."""
-        if not self.dualsense:
-            return False
-
-        try:
-            state = self.dualsense.state
-            return state is not None
-        except Exception:
-            return False
+        if not self.dualsense: return False
+        try: return self.dualsense.state is not None
+        except Exception: return False
 
     def _disconnect(self) -> None:
-        """Desconecta el control y limpia recursos."""
         with self._lock:
             was_connected = self._connected
             self._connected = False
@@ -305,22 +228,17 @@ class ConnectionManager:
 
         if self.dualsense:
             try:
-                # Apagar LEDs y efectos antes de desconectar
                 self._reset_controller_state()
                 self.dualsense.close()
-            except Exception as e:
-                logger.warning(f"Error al cerrar conexion: {e}")
-            finally:
-                self.dualsense = None
+            except Exception: pass
+            finally: self.dualsense = None
 
         if was_connected:
             logger.info("DualSense desconectado")
             self._notify_disconnect()
 
     def _reset_controller_state(self) -> None:
-        """Resetea el estado del control al desconectarse."""
-        if not self.dualsense:
-            return
+        if not self.dualsense: return
         try:
             from pydualsense import TriggerModes
             self.dualsense.triggerL.setMode(TriggerModes.Off)
@@ -328,13 +246,9 @@ class ConnectionManager:
             self.dualsense.light.setColorI(0, 0, 0)
             self.dualsense.setLeftMotor(0)
             self.dualsense.setRightMotor(0)
-        except Exception:
-            pass
-
-    # ===== Lectura de Estado =====
+        except Exception: pass
 
     def _state_loop(self) -> None:
-        """Bucle de lectura continua del estado del control."""
         while self._running:
             try:
                 if self._connected and self.dualsense:
@@ -343,14 +257,10 @@ class ConnectionManager:
                 else:
                     time.sleep(self.CONNECTION_POLL_INTERVAL)
             except Exception as e:
-                logger.error(f"Error en lectura de estado: {e}")
                 time.sleep(0.5)
 
     def _read_controller_state(self) -> None:
-        """Lee el estado actual del control."""
-        if not self.dualsense or not self.dualsense.state:
-            return
-
+        if not self.dualsense or not self.dualsense.state: return
         try:
             ds_state = self.dualsense.state
 
@@ -358,7 +268,6 @@ class ConnectionManager:
                 old_battery = self._state.battery_level
                 old_charging = self._state.charging_status
 
-                # Actualizar estado
                 self._state.left_trigger = getattr(ds_state, 'L2', 0)
                 self._state.right_trigger = getattr(ds_state, 'R2', 0)
                 self._state.left_stick_x = getattr(ds_state, 'LX', 128)
@@ -367,7 +276,6 @@ class ConnectionManager:
                 self._state.right_stick_y = getattr(ds_state, 'RY', 128)
                 self._state.timestamp = time.time()
 
-                # Leer botones
                 self._state.buttons = {
                     'cross': getattr(ds_state, 'cross', False),
                     'circle': getattr(ds_state, 'circle', False),
@@ -390,116 +298,85 @@ class ConnectionManager:
                     'dpad_right': getattr(ds_state, 'DpadRight', False),
                 }
 
-                # Leer bateria
                 try:
-                    battery = getattr(ds_state, 'battery', None)
-                    if battery is not None:
-                        if battery <= 100:
-                            self._state.battery_level = int(battery)
-                        else:
-                            self._state.battery_level = min(100, int((battery / 255) * 100))
+                    bat_level = self._state.battery_level 
+                    if hasattr(self.dualsense, 'battery'):
+                        b_obj = self.dualsense.battery
+                        raw_val = None
+                        for attr in ['Level', 'level', 'Value', 'value', 'Capacity', 'capacity']:
+                            if hasattr(b_obj, attr):
+                                val = getattr(b_obj, attr)
+                                if val is not None:
+                                    try:
+                                        raw_val = int(val)
+                                        break
+                                    except (ValueError, TypeError): pass
+                        
+                        if raw_val is not None:
+                            if raw_val <= 10: bat_level = raw_val * 10
+                            elif raw_val in (11, 13, 14): bat_level = 100
+                            elif raw_val == 15:
+                                if self._connection_type == ConnectionType.USB: bat_level = 100
+                            else: bat_level = min(100, raw_val)
 
-                    charging = getattr(ds_state, 'batteryState', None)
-                    if charging is not None:
-                        if charging == 0x00:
-                            self._state.charging_status = ChargingStatus.DISCHARGING
-                        elif charging == 0x01:
-                            self._state.charging_status = ChargingStatus.CHARGING
-                        elif charging == 0x02:
-                            self._state.charging_status = ChargingStatus.CHARGED
-                    elif self._connection_type == ConnectionType.USB:
-                        if self._state.battery_level >= 95:
-                            self._state.charging_status = ChargingStatus.CHARGED
-                        else:
-                            self._state.charging_status = ChargingStatus.CHARGING
+                    self._state.battery_level = bat_level
+                    if self._connection_type == ConnectionType.USB:
+                        self._state.charging_status = ChargingStatus.CHARGED if bat_level >= 95 else ChargingStatus.CHARGING
+                    else:
+                        self._state.charging_status = ChargingStatus.DISCHARGING
+                except Exception: pass
 
-                except Exception:
-                    pass
+            if (old_battery != self._state.battery_level or old_charging != self._state.charging_status):
+                self._notify_battery_change(self._state.battery_level, self._state.charging_status)
 
-            # Notificar cambios de bateria
-            if (old_battery != self._state.battery_level or
-                old_charging != self._state.charging_status):
-                self._notify_battery_change(
-                    self._state.battery_level,
-                    self._state.charging_status
-                )
-
-            # Notificar actualizacion de estado
             self._notify_state_update(self.state)
+            
+            # <--- AQUI ACTUALIZAMOS EL EMULADOR A 60 FPS --->
+            self.emulator.update_from_dualsense(self.state)
 
-        except Exception as e:
-            logger.error(f"Error leyendo estado del control: {e}")
-
-    # ===== Notificaciones =====
+        except Exception: pass
 
     def _notify_connect(self, conn_type: ConnectionType) -> None:
-        """Notifica a los listeners que se conecto el control."""
         for callback in self._on_connect:
-            try:
-                callback(conn_type)
-            except Exception as e:
-                logger.error(f"Error en callback on_connect: {e}")
+            try: callback(conn_type)
+            except Exception: pass
 
     def _notify_disconnect(self) -> None:
-        """Notifica a los listeners que se desconecto el control."""
         for callback in self._on_disconnect:
-            try:
-                callback()
-            except Exception as e:
-                logger.error(f"Error en callback on_disconnect: {e}")
+            try: callback()
+            except Exception: pass
 
     def _notify_state_update(self, state: ControllerState) -> None:
-        """Notifica actualizacion de estado."""
         for callback in self._on_state_update:
-            try:
-                callback(state)
-            except Exception as e:
-                logger.error(f"Error en callback on_state_update: {e}")
+            try: callback(state)
+            except Exception: pass
 
     def _notify_battery_change(self, level: int, status: ChargingStatus) -> None:
-        """Notifica cambio en el estado de bateria."""
         for callback in self._on_battery_change:
-            try:
-                callback(level, status)
-            except Exception as e:
-                logger.error(f"Error en callback on_battery_change: {e}")
+            try: callback(level, status)
+            except Exception: pass
 
     def _notify_error(self, message: str) -> None:
-        """Notifica un error."""
         for callback in self._on_error:
-            try:
-                callback(message)
-            except Exception as e:
-                logger.error(f"Error en callback on_error: {e}")
-
-    # ===== Metodos Publicos =====
+            try: callback(message)
+            except Exception: pass
 
     def get_battery_info(self) -> tuple[int, ChargingStatus]:
-        """Devuelve informacion de la bateria."""
-        with self._lock:
-            return self._state.battery_level, self._state.charging_status
+        with self._lock: return self._state.battery_level, self._state.charging_status
 
     def perform_bluetooth_reset(self) -> bool:
-        """Realiza un reinicio completo del Bluetooth."""
         return self.bluetooth_manager.full_bluetooth_reset()
 
     def set_led_color(self, r: int, g: int, b: int) -> None:
-        """Establece el color del LED del touchpad."""
         if self.dualsense:
-            try:
-                self.dualsense.light.setColorI(r, g, b)
-            except Exception:
-                pass
+            try: self.dualsense.light.setColorI(r, g, b)
+            except Exception: pass
 
-    def set_player_led(self, player: int) -> None:
-        """Desactivado temporalmente para evitar conflictos."""
-        pass
+    def set_player_led(self, player: int) -> None: pass
 
     def set_rumble(self, left_motor: int, right_motor: int) -> None:
-        """Establece la intensidad de vibracion (0-255)."""
         if self.dualsense:
             try:
                 self.dualsense.setLeftMotor(left_motor)
                 self.dualsense.setRightMotor(right_motor)
-            except Exception:
-                pass
+            except Exception: pass
