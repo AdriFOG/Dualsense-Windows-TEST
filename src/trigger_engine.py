@@ -463,12 +463,9 @@ class TriggerEngine:
             # Aplicar efecto al gatillo derecho
             self.apply_effect('right', profile.right_trigger)
 
-            # Aplicar vibracion base si hay connection manager
-            if self.connection_manager and profile.rumble_intensity > 0:
-                self.connection_manager.set_rumble(
-                    profile.rumble_intensity // 2,
-                    profile.rumble_intensity
-                )
+            # Apagar motores al cambiar de perfil para evitar vibracion infinita
+            if self.connection_manager:
+                self.connection_manager.set_rumble(0, 0)
 
             self._current_profile = profile_id
 
