@@ -252,15 +252,10 @@ class ConnectionManager:
             return ConnectionType.UNKNOWN
 
         try:
-            # En pydualsense, podemos inferir el tipo de conexion
-            # por el reporte de estado o propiedades del dispositivo
             device = self.dualsense.device
 
             if device:
-                # Intentar obtener informacion del dispositivo HID
                 try:
-                    # Los dispositivos USB suelen tener ciertos paths
-                    # Bluetooth tiene otros identificadores
                     device_info = device.get_manufacturer_string() if hasattr(device, 'get_manufacturer_string') else ""
                     product_info = device.get_product_string() if hasattr(device, 'get_product_string') else ""
 
@@ -273,7 +268,6 @@ class ConnectionManager:
                 except Exception:
                     pass
 
-                # Fallback: intentar por el path del dispositivo
                 try:
                     path = device.path.decode('utf-8') if isinstance(device.path, bytes) else str(device.path)
                     if "bluetooth" in path.lower() or "{00001124" in path:
@@ -283,8 +277,6 @@ class ConnectionManager:
                 except Exception:
                     pass
 
-            # Si no podemos determinar, asumimos USB como default
-            # (generalmente mas confiable)
             return ConnectionType.USB
 
         except Exception as e:
@@ -297,7 +289,6 @@ class ConnectionManager:
             return False
 
         try:
-            # Intentar leer el estado - si falla, la conexion se perdio
             state = self.dualsense.state
             return state is not None
         except Exception:
@@ -327,26 +318,18 @@ class ConnectionManager:
             self._notify_disconnect()
 
     def _reset_controller_state(self) -> None:
-        """Resetea el estado del control (LEDs, gatillos, etc.)"""
+        """Resetea el estado del control al desconectarse."""
         if not self.dualsense:
             return
-
         try:
-            # Apagar LED del player
-            self.dualsense.setLEDPlayer(0)
-
-            # Resetear gatillos
-            if hasattr(self.dualsense, 'setLeftTriggerMode'):
-                self.dualsense.setLeftTriggerMode(TriggerModes.Off)
-            if hasattr(self.dualsense, 'setRightTriggerMode'):
-                self.dualsense.setRightTriggerMode(TriggerModes.Off)
-
-            # Apagar luz del touchpad
-            if hasattr(self.dualsense, 'setTouchpadLED'):
-                self.dualsense.setTouchpadLED(0, 0, 0)
-
-        except Exception as e:
-            logger.warning(f"Error al resetear estado del control: {e}")
+            from pydualsense import TriggerModes
+            self.dualsense.triggerL.setMode(TriggerModes.Off)
+            self.dualsense.triggerR.setMode(TriggerModes.Off)
+            self.dualsense.light.setColorI(0, 0, 0)
+            self.dualsense.setLeftMotor(0)
+            self.dualsense.setRightMotor(0)
+        except Exception:
+            pass
 
     # ===== Lectura de Estado =====
 
@@ -407,17 +390,15 @@ class ConnectionManager:
                     'dpad_right': getattr(ds_state, 'DpadRight', False),
                 }
 
-                # Leer bateria (si esta disponible)
+                # Leer bateria
                 try:
                     battery = getattr(ds_state, 'battery', None)
                     if battery is not None:
-                        # La bateria suele venir en valor 0-255 o porcentaje
                         if battery <= 100:
                             self._state.battery_level = int(battery)
                         else:
                             self._state.battery_level = min(100, int((battery / 255) * 100))
 
-                    # Estado de carga
                     charging = getattr(ds_state, 'batteryState', None)
                     if charging is not None:
                         if charging == 0x00:
@@ -427,7 +408,6 @@ class ConnectionManager:
                         elif charging == 0x02:
                             self._state.charging_status = ChargingStatus.CHARGED
                     elif self._connection_type == ConnectionType.USB:
-                        # Si esta por USB, probablemente este cargando
                         if self._state.battery_level >= 95:
                             self._state.charging_status = ChargingStatus.CHARGED
                         else:
@@ -505,27 +485,21 @@ class ConnectionManager:
 
     def set_led_color(self, r: int, g: int, b: int) -> None:
         """Establece el color del LED del touchpad."""
-        if self.dualsense and hasattr(self.dualsense, 'setTouchpadLED'):
+        if self.dualsense:
             try:
-                self.dualsense.setTouchpadLED(r, g, b)
-            except Exception as e:
-                logger.warning(f"Error al establecer LED: {e}")
+                self.dualsense.light.setColorI(r, g, b)
+            except Exception:
+                pass
 
     def set_player_led(self, player: int) -> None:
-        """Establece el numero de jugador (1-4, 0 = apagado)."""
-        if self.dualsense and hasattr(self.dualsense, 'setLEDPlayer'):
-            try:
-                self.dualsense.setLEDPlayer(player)
-            except Exception as e:
-                logger.warning(f"Error al establecer player LED: {e}")
+        """Desactivado temporalmente para evitar conflictos."""
+        pass
 
     def set_rumble(self, left_motor: int, right_motor: int) -> None:
         """Establece la intensidad de vibracion (0-255)."""
         if self.dualsense:
             try:
-                if hasattr(self.dualsense, 'setLeftMotor'):
-                    self.dualsense.setLeftMotor(left_motor)
-                if hasattr(self.dualsense, 'setRightMotor'):
-                    self.dualsense.setRightMotor(right_motor)
-            except Exception as e:
-                logger.warning(f"Error al establecer rumble: {e}")
+                self.dualsense.setLeftMotor(left_motor)
+                self.dualsense.setRightMotor(right_motor)
+            except Exception:
+                pass
