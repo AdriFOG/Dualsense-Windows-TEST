@@ -1321,7 +1321,7 @@ class DualSenseGUI:
             'y': self.root.winfo_y(),
         }
 
-    # ===== Ciclo de Vida =====
+        # ===== Ciclo de Vida =====
 
     def start(self) -> None:
         """Inicia la interfaz grafica."""
@@ -1336,6 +1336,8 @@ class DualSenseGUI:
             self._on_battery_change(bat_level, bat_status)
 
         self._schedule_update()
+
+    def _schedule_update(self) -> None:
         """Programa la proxima actualizacion de UI."""
         if not self._running:
             return
