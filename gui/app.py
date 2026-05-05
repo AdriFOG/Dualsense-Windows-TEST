@@ -12,6 +12,14 @@ from tkinter import messagebox, filedialog, colorchooser
 from typing import Optional, Callable, Dict, List
 
 try:
+    from src.emulator import EmulationMode
+except ImportError:
+    class EmulationMode:
+        NONE = "none"
+        XBOX = "xbox"
+        PS4 = "ps4"
+
+try:
     import customtkinter as ctk
     from customtkinter import (
         CTk, CTkFrame, CTkLabel, CTkButton, CTkSlider, CTkSwitch,
@@ -161,7 +169,7 @@ class DualSenseGUI:
     def _build_header(self) -> None:
         """Construye el header con titulo e indicadores de estado."""
         header = CTkFrame(self.main_frame, fg_color=self.COLORS['bg_secondary'],
-                         corner_radius=12, height=70)
+                          corner_radius=12, height=70)
         header.pack(fill=tk.X, pady=(0, 10))
         header.pack_propagate(False)
 
@@ -784,6 +792,40 @@ class DualSenseGUI:
         )
         self.minimize_tray_switch.pack(fill=tk.X, padx=10, pady=5)
 
+        # ===== Seccion: Emulacion =====
+        emu_frame = self._create_settings_section(scroll_frame, "Emulación (Compatibilidad PC)")
+        emu_frame.pack(fill=tk.X, pady=(0, 15))
+
+        emu_inner = CTkFrame(emu_frame, fg_color="transparent")
+        emu_inner.pack(fill=tk.X, padx=10, pady=5)
+
+        CTkLabel(
+            emu_inner, text="Control Virtual:",
+            font=("Segoe UI", 12),
+            text_color=self.COLORS['text_primary']
+        ).pack(side=tk.LEFT)
+
+        self.emulation_var = tk.StringVar(value="Apagado")
+        self.emulation_menu = CTkOptionMenu(
+            emu_inner,
+            values=["Apagado", "Xbox 360", "PlayStation 4"],
+            variable=self.emulation_var,
+            command=self._on_emulation_change,
+            width=150,
+            font=("Segoe UI", 11),
+            fg_color=self.COLORS['bg_secondary'],
+            button_color=self.COLORS['accent'],
+            button_hover_color=self.COLORS['accent_hover'],
+        )
+        self.emulation_menu.pack(side=tk.RIGHT)
+
+        # Restaurar configuración de emulación guardada
+        if self.profile_manager:
+            saved_emu = self.profile_manager.get_setting('emulation_mode', "Apagado")
+            self.emulation_var.set(saved_emu)
+            # Retrasamos la conexión del emulador 1 segundo para no saturar el arranque
+            self.root.after(1000, lambda: self._on_emulation_change(saved_emu))
+
         # ===== Seccion: LED =====
         led_frame = self._create_settings_section(scroll_frame, "LED y Apariencia")
         led_frame.pack(fill=tk.X, pady=(0, 15))
@@ -1119,6 +1161,30 @@ class DualSenseGUI:
         """Actualiza el label de intensidad."""
         label = getattr(self, f'{trigger}_intensity_value')
         label.configure(text=f"{int(value)}")
+
+    def _on_emulation_change(self, value: str) -> None:
+        """Maneja el cambio de emulacion de control."""
+        if not hasattr(self, 'connection_manager') or not self.connection_manager:
+            return
+
+        if value == "Xbox 360":
+            mode = EmulationMode.XBOX
+        elif value == "PlayStation 4":
+            mode = EmulationMode.PS4
+        else:
+            mode = EmulationMode.NONE
+
+        success = self.connection_manager.set_emulation_mode(mode)
+        
+        if success:
+            self._set_status(f"Emulación cambiada a: {value}")
+            if self.profile_manager:
+                self.profile_manager.set_setting('emulation_mode', value)
+        else:
+            self._set_status("Error al emular. Asegúrate de tener ViGEmBus instalado.")
+            self.emulation_var.set("Apagado")
+            if self.profile_manager:
+                self.profile_manager.set_setting('emulation_mode', "Apagado")
 
     def _reset_triggers(self) -> None:
         """Resetea ambos gatillos."""
