@@ -1327,9 +1327,15 @@ class DualSenseGUI:
         """Inicia la interfaz grafica."""
         self._running = True
         self._set_status("Listo - Conecta tu DualSense")
-        self._schedule_update()
+        
+        # Sincronizar la UI si el control se conectó más rápido que la interfaz
+        if self.connection_manager and self.connection_manager.is_connected:
+            self._on_controller_connected(self.connection_manager.connection_type)
+            # Forzar la lectura inicial de la batería
+            bat_level, bat_status = self.connection_manager.get_battery_info()
+            self._on_battery_change(bat_level, bat_status)
 
-    def _schedule_update(self) -> None:
+        self._schedule_update()
         """Programa la proxima actualizacion de UI."""
         if not self._running:
             return
