@@ -18,7 +18,7 @@ except ImportError:
     logging.warning("pydualsense no instalado. El programa funcionara en modo simulacion.")
 
 from .bluetooth_utils import BluetoothManager
-from .emulator import EmulatorManager, EmulationMode  # <--- IMPORTAMOS EL EMULADOR
+from .emulator import EmulatorManager, EmulationMode
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,12 @@ class ControllerState:
 
 class ConnectionManager:
     CONNECTION_POLL_INTERVAL = 2.0
-    STATE_POLL_INTERVAL = 0.016  # ~60Hz
+    STATE_POLL_INTERVAL = 0.016
 
     def __init__(self):
         self.dualsense: Optional['pydualsense'] = None
         self.bluetooth_manager = BluetoothManager()
-        self.emulator = EmulatorManager()  # <--- INICIALIZAMOS EL EMULADOR
+        self.emulator = EmulatorManager()
         self._state = ControllerState()
         self._connected = False
         self._connection_type = ConnectionType.NONE
@@ -120,7 +120,6 @@ class ConnectionManager:
         return self.dualsense
 
     def set_emulation_mode(self, mode: EmulationMode) -> bool:
-        """Activa o desactiva la emulacion (Xbox, PS4 o Ninguna)"""
         return self.emulator.set_mode(mode)
 
     def start(self) -> None:
@@ -139,7 +138,7 @@ class ConnectionManager:
             self._connection_thread.join(timeout=3)
         if self._state_thread and self._state_thread.is_alive():
             self._state_thread.join(timeout=3)
-        self.emulator.set_mode(EmulationMode.NONE) # Apagar emulador al cerrar
+        self.emulator.set_mode(EmulationMode.NONE)
         self._disconnect()
         logger.info("ConnectionManager detenido")
 
@@ -252,37 +251,26 @@ class ConnectionManager:
                 old_battery = self._state.battery_level
                 old_charging = self._state.charging_status
 
-                # --- SOLUCION DEFINITIVA PARA GATILLOS Y PALANCAS ---
-                
-                # 1. Gatillos: Leer de la propiedad correcta '_value'
+                # --- LECTURA SEGURA DE GATILLOS ---
                 lt_raw = getattr(ds_state, 'L2_value', getattr(ds_state, 'L2', 0))
                 rt_raw = getattr(ds_state, 'R2_value', getattr(ds_state, 'R2', 0))
                 
-                # Si por alguna razon devuelve True/False (booleano) por un bug interno,
-                # lo convertimos a 0 o 255 para evitar que el emulador se crashee.
                 if isinstance(lt_raw, bool): self._state.left_trigger = 255 if lt_raw else 0
                 else: self._state.left_trigger = lt_raw
                 
                 if isinstance(rt_raw, bool): self._state.right_trigger = 255 if rt_raw else 0
                 else: self._state.right_trigger = rt_raw
 
-                # 2. Palancas: Escalar los micro-valores defectuosos
-                # Leemos los valores crudos (-1 a 5, por ejemplo)
+                # --- LECTURA SEGURA Y ESCALADO DE PALANCAS ---
                 lx_raw = getattr(ds_state, 'LX', 0)
                 ly_raw = getattr(ds_state, 'LY', 0)
                 rx_raw = getattr(ds_state, 'RX', 0)
                 ry_raw = getattr(ds_state, 'RY', 0)
 
-                # Creamos una funcion para forzar un escalado de 0 a 255 basado en el 
-                # comportamiento extraño de la libreria (asumiendo un rango muerto de -2 a 6)
+                # Pydualsense lee de -128 a 127. Sumamos 128 para mapearlo perfecto a 0-255.
                 def escalar_stick(val):
                     try:
-                        val_float = float(val)
-                        # Centramos y expandimos agresivamente
-                        # Esto asume que el centro real reportado ronda el 3 o 4
-                        escala = ((val_float - 3.5) / 4.5) * 127
-                        # Sumamos 128 para tener el centro tradicional de PlayStation
-                        return int(max(0, min(255, escala + 128)))
+                        return int(max(0, min(255, float(val) + 128)))
                     except:
                         return 128
 
@@ -303,11 +291,8 @@ class ConnectionManager:
                     'R2_btn': getattr(ds_state, 'R2Btn', getattr(ds_state, 'r2_btn', False)),
                     'L3': getattr(ds_state, 'L3', getattr(ds_state, 'l3', False)),
                     'R3': getattr(ds_state, 'R3', getattr(ds_state, 'r3', False)),
-                    
-                    # Correccion critica para boton Select/Share/Create
                     'create': getattr(ds_state, 'create', getattr(ds_state, 'share', False)),
                     'options': getattr(ds_state, 'options', getattr(ds_state, 'start', False)),
-                    
                     'ps': getattr(ds_state, 'PS', getattr(ds_state, 'ps', False)),
                     'touchpad': getattr(ds_state, 'touchBtn', getattr(ds_state, 'touchpad', False)),
                     'mute': getattr(ds_state, 'mute', False),
@@ -348,8 +333,6 @@ class ConnectionManager:
                 self._notify_battery_change(self._state.battery_level, self._state.charging_status)
 
             self._notify_state_update(self.state)
-            
-            # <--- AQUI ACTUALIZAMOS EL EMULADOR A 60 FPS --->
             self.emulator.update_from_dualsense(self.state)
 
         except Exception: pass
