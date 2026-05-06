@@ -1,7 +1,6 @@
 """
 Gestor de Conexion DualSense
-Maneja la deteccion automatica de conexion USB/Bluetooth, monitoreo de bateria
-y estado del control.
+Maneja la deteccion automatica de conexion USB/Bluetooth, monitoreo de bateria y estado del control.
 """
 
 import logging
@@ -23,20 +22,17 @@ from .emulator import EmulatorManager, EmulationMode  # <--- IMPORTAMOS EL EMULA
 
 logger = logging.getLogger(__name__)
 
-
 class ConnectionType(Enum):
     NONE = "none"
     USB = "usb"
     BLUETOOTH = "bluetooth"
     UNKNOWN = "unknown"
 
-
 class ChargingStatus(Enum):
     DISCHARGING = "descargando"
     CHARGING = "cargando"
     CHARGED = "cargado completo"
     UNKNOWN = "desconocido"
-
 
 @dataclass
 class ControllerState:
@@ -53,7 +49,6 @@ class ControllerState:
     buttons: dict = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
 
-
 class ConnectionManager:
     CONNECTION_POLL_INTERVAL = 2.0
     STATE_POLL_INTERVAL = 0.016  # ~60Hz
@@ -62,7 +57,6 @@ class ConnectionManager:
         self.dualsense: Optional['pydualsense'] = None
         self.bluetooth_manager = BluetoothManager()
         self.emulator = EmulatorManager()  # <--- INICIALIZAMOS EL EMULADOR
-
         self._state = ControllerState()
         self._connected = False
         self._connection_type = ConnectionType.NONE
@@ -132,7 +126,6 @@ class ConnectionManager:
     def start(self) -> None:
         if self._running:
             return
-
         self._running = True
         self._connection_thread = threading.Thread(target=self._connection_loop, name="ConnectionMonitor", daemon=True)
         self._connection_thread.start()
@@ -146,7 +139,6 @@ class ConnectionManager:
             self._connection_thread.join(timeout=3)
         if self._state_thread and self._state_thread.is_alive():
             self._state_thread.join(timeout=3)
-
         self.emulator.set_mode(EmulationMode.NONE) # Apagar emulador al cerrar
         self._disconnect()
         logger.info("ConnectionManager detenido")
@@ -167,22 +159,18 @@ class ConnectionManager:
     def _try_connect(self) -> bool:
         if not PYDUALSENSE_AVAILABLE:
             return False
-
         try:
             self.dualsense = pydualsense()
             self.dualsense.init()
             conn_type = self._detect_connection_type()
-
             with self._lock:
                 self._connected = True
                 self._connection_type = conn_type
                 self._state.connected = True
                 self._state.connection_type = conn_type
-
             logger.info(f"DualSense conectado via {conn_type.value.upper()}")
             self._notify_connect(conn_type)
             return True
-
         except Exception as e:
             if self.dualsense:
                 try: self.dualsense.close()
@@ -199,11 +187,9 @@ class ConnectionManager:
                     device_info = device.get_manufacturer_string() if hasattr(device, 'get_manufacturer_string') else ""
                     product_info = device.get_product_string() if hasattr(device, 'get_product_string') else ""
                     info_str = f"{device_info} {product_info}".lower()
-
                     if "bluetooth" in info_str or "bt" in info_str: return ConnectionType.BLUETOOTH
                     elif "usb" in info_str: return ConnectionType.USB
                 except Exception: pass
-
                 try:
                     path = device.path.decode('utf-8') if isinstance(device.path, bytes) else str(device.path)
                     if "bluetooth" in path.lower() or "{00001124" in path: return ConnectionType.BLUETOOTH
@@ -225,14 +211,12 @@ class ConnectionManager:
             self._connection_type = ConnectionType.NONE
             self._state.connected = False
             self._state.connection_type = ConnectionType.NONE
-
         if self.dualsense:
             try:
                 self._reset_controller_state()
                 self.dualsense.close()
             except Exception: pass
             finally: self.dualsense = None
-
         if was_connected:
             logger.info("DualSense desconectado")
             self._notify_disconnect()
@@ -263,19 +247,51 @@ class ConnectionManager:
         if not self.dualsense or not self.dualsense.state: return
         try:
             ds_state = self.dualsense.state
-
+            
             with self._lock:
                 old_battery = self._state.battery_level
                 old_charging = self._state.charging_status
 
-                self._state.left_trigger = getattr(ds_state, 'L2', 0)
-                self._state.right_trigger = getattr(ds_state, 'R2', 0)
-                self._state.left_stick_x = getattr(ds_state, 'LX', 128)
-                self._state.left_stick_y = getattr(ds_state, 'LY', 128)
-                self._state.right_stick_x = getattr(ds_state, 'RX', 128)
-                self._state.right_stick_y = getattr(ds_state, 'RY', 128)
-                self._state.timestamp = time.time()
+                # --- SOLUCION DEFINITIVA PARA GATILLOS Y PALANCAS ---
+                
+                # 1. Gatillos: Leer de la propiedad correcta '_value'
+                lt_raw = getattr(ds_state, 'L2_value', getattr(ds_state, 'L2', 0))
+                rt_raw = getattr(ds_state, 'R2_value', getattr(ds_state, 'R2', 0))
+                
+                # Si por alguna razon devuelve True/False (booleano) por un bug interno,
+                # lo convertimos a 0 o 255 para evitar que el emulador se crashee.
+                if isinstance(lt_raw, bool): self._state.left_trigger = 255 if lt_raw else 0
+                else: self._state.left_trigger = lt_raw
+                
+                if isinstance(rt_raw, bool): self._state.right_trigger = 255 if rt_raw else 0
+                else: self._state.right_trigger = rt_raw
 
+                # 2. Palancas: Escalar los micro-valores defectuosos
+                # Leemos los valores crudos (-1 a 5, por ejemplo)
+                lx_raw = getattr(ds_state, 'LX', 0)
+                ly_raw = getattr(ds_state, 'LY', 0)
+                rx_raw = getattr(ds_state, 'RX', 0)
+                ry_raw = getattr(ds_state, 'RY', 0)
+
+                # Creamos una funcion para forzar un escalado de 0 a 255 basado en el 
+                # comportamiento extraño de la libreria (asumiendo un rango muerto de -2 a 6)
+                def escalar_stick(val):
+                    try:
+                        val_float = float(val)
+                        # Centramos y expandimos agresivamente
+                        # Esto asume que el centro real reportado ronda el 3 o 4
+                        escala = ((val_float - 3.5) / 4.5) * 127
+                        # Sumamos 128 para tener el centro tradicional de PlayStation
+                        return int(max(0, min(255, escala + 128)))
+                    except:
+                        return 128
+
+                self._state.left_stick_x = escalar_stick(lx_raw)
+                self._state.left_stick_y = escalar_stick(ly_raw)
+                self._state.right_stick_x = escalar_stick(rx_raw)
+                self._state.right_stick_y = escalar_stick(ry_raw)
+
+                self._state.timestamp = time.time()
                 self._state.buttons = {
                     'cross': getattr(ds_state, 'cross', False),
                     'circle': getattr(ds_state, 'circle', False),
@@ -283,19 +299,22 @@ class ConnectionManager:
                     'triangle': getattr(ds_state, 'triangle', False),
                     'L1': getattr(ds_state, 'L1', False),
                     'R1': getattr(ds_state, 'R1', False),
-                    'L2_btn': getattr(ds_state, 'L2Btn', False),
-                    'R2_btn': getattr(ds_state, 'R2Btn', False),
-                    'L3': getattr(ds_state, 'L3', False),
-                    'R3': getattr(ds_state, 'R3', False),
-                    'create': getattr(ds_state, 'create', False),
-                    'options': getattr(ds_state, 'options', False),
-                    'ps': getattr(ds_state, 'PS', False),
-                    'touchpad': getattr(ds_state, 'touchBtn', False),
+                    'L2_btn': getattr(ds_state, 'L2Btn', getattr(ds_state, 'l2_btn', False)),
+                    'R2_btn': getattr(ds_state, 'R2Btn', getattr(ds_state, 'r2_btn', False)),
+                    'L3': getattr(ds_state, 'L3', getattr(ds_state, 'l3', False)),
+                    'R3': getattr(ds_state, 'R3', getattr(ds_state, 'r3', False)),
+                    
+                    # Correccion critica para boton Select/Share/Create
+                    'create': getattr(ds_state, 'create', getattr(ds_state, 'share', False)),
+                    'options': getattr(ds_state, 'options', getattr(ds_state, 'start', False)),
+                    
+                    'ps': getattr(ds_state, 'PS', getattr(ds_state, 'ps', False)),
+                    'touchpad': getattr(ds_state, 'touchBtn', getattr(ds_state, 'touchpad', False)),
                     'mute': getattr(ds_state, 'mute', False),
-                    'dpad_up': getattr(ds_state, 'DpadUp', False),
-                    'dpad_down': getattr(ds_state, 'DpadDown', False),
-                    'dpad_left': getattr(ds_state, 'DpadLeft', False),
-                    'dpad_right': getattr(ds_state, 'DpadRight', False),
+                    'dpad_up': getattr(ds_state, 'DpadUp', getattr(ds_state, 'dpad_up', False)),
+                    'dpad_down': getattr(ds_state, 'DpadDown', getattr(ds_state, 'dpad_down', False)),
+                    'dpad_left': getattr(ds_state, 'DpadLeft', getattr(ds_state, 'dpad_left', False)),
+                    'dpad_right': getattr(ds_state, 'DpadRight', getattr(ds_state, 'dpad_right', False)),
                 }
 
                 try:
@@ -311,15 +330,14 @@ class ConnectionManager:
                                         raw_val = int(val)
                                         break
                                     except (ValueError, TypeError): pass
-                        
                         if raw_val is not None:
                             if raw_val <= 10: bat_level = raw_val * 10
                             elif raw_val in (11, 13, 14): bat_level = 100
                             elif raw_val == 15:
                                 if self._connection_type == ConnectionType.USB: bat_level = 100
                             else: bat_level = min(100, raw_val)
-
                     self._state.battery_level = bat_level
+
                     if self._connection_type == ConnectionType.USB:
                         self._state.charging_status = ChargingStatus.CHARGED if bat_level >= 95 else ChargingStatus.CHARGING
                     else:
