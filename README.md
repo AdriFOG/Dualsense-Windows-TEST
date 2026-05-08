@@ -168,15 +168,19 @@ pip install pydualsense hidapi
 * **pywin32**: Integracion con Windows
 * **pyinstaller**: Empaquetado a .exe
 
-Licencia
+## Licencia
+
 Proyecto educativo / proof-of-concept. Usar bajo tu propia responsabilidad.
 Sony, PlayStation y DualSense son marcas registradas de Sony Interactive Entertainment.
 
 ---
-Creditos y Referencias
-MinHook por Tsuda Kageyu
-HIDAPI por libusb/hidapi contributors
-ViGEmBus por Nefarius
-DSX por Paliverse / DSX Team (inspiracion de funcionalidad)
-Protocolo DualSense reverse-engineering por la comunidad de PS4/PS5 homebrew
+
+## Creditos y Referencias
+
+- [MinHook](https://github.com/TsudaKageyu/minhook) por Tsuda Kageyu
+- [HIDAPI](https://github.com/libusb/hidapi) por libusb/hidapi contributors
+- [ViGEmBus](https://github.com/ViGEm/ViGEmBus) por Nefarius
+- [DSX](https://dsx.ds4windows.com/) por Paliverse / DSX Team (inspiracion de funcionalidad)
+- Protocolo DualSense reverse-engineering por la comunidad de PS4/PS5 homebrew
+
 
